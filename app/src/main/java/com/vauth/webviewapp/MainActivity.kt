@@ -7,17 +7,21 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.util.Log
+import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import android.view.animation.AlphaAnimation
+import android.view.animation.Animation
 import android.webkit.*
 import android.widget.FrameLayout
-import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -29,7 +33,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 /**
- * Advanced WebView app - Edge-to-edge + Dynamic status bar
+ * Advanced WebView app - Edge-to-edge + Dynamic status bar + Better Splash
  * Based on Vauth/android-web
  */
 class MainActivity : AppCompatActivity() {
@@ -149,16 +153,27 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // Loading overlay (will improve in next step)
+            // ===== IMPROVED LOADING / SPLASH SCREEN =====
             loadingOverlay = FrameLayout(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
-                setBackgroundColor(Color.parseColor("#121212"))
+                setBackgroundColor(Color.parseColor("#0F0F0F")) // Clean dark background
                 visibility = View.VISIBLE
 
-                val loadingSpinner = ProgressBar(context).apply {
+                // App name text in the center
+                val appNameText = TextView(context).apply {
+                    text = try {
+                        // Try to get the real app name
+                        packageManager.getApplicationLabel(applicationInfo).toString()
+                    } catch (e: Exception) {
+                        "Loading..."
+                    }
+                    setTextColor(Color.WHITE)
+                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
+                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+                    gravity = Gravity.CENTER
                     layoutParams = FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.WRAP_CONTENT,
                         FrameLayout.LayoutParams.WRAP_CONTENT
@@ -166,7 +181,7 @@ class MainActivity : AppCompatActivity() {
                         gravity = Gravity.CENTER
                     }
                 }
-                addView(loadingSpinner)
+                addView(appNameText)
             }
 
             container?.addView(webView)
@@ -174,15 +189,11 @@ class MainActivity : AppCompatActivity() {
 
             setContentView(container)
 
-            // ===== IMPORTANT: Proper insets so content never goes under status bar =====
+            // ===== Proper insets so content never goes under status bar =====
             container?.let { root ->
                 ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
                     val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-
-                    // Give WebView top padding = status bar height
-                    // This keeps website buttons fully visible
                     webView?.setPadding(0, systemBars.top, 0, systemBars.bottom)
-
                     insets
                 }
             }
@@ -271,10 +282,10 @@ class MainActivity : AppCompatActivity() {
                 try {
                     super.onPageFinished(view, url)
 
-                    // Hide loading overlay after first page
+                    // Smooth fade-out of the splash screen
                     if (isFirstPageLoad) {
-                        loadingOverlay?.visibility = View.GONE
                         isFirstPageLoad = false
+                        fadeOutLoadingOverlay()
                     }
 
                     // ===== DYNAMIC STATUS BAR COLOR =====
@@ -293,7 +304,7 @@ class MainActivity : AppCompatActivity() {
                             if (result != null && result != "null") {
                                 val colorString = result.replace("\"", "").trim()
                                 val color = parseCssColor(colorString)
-                                applyStatusBarColor(color) // now accepts null
+                                applyStatusBarColor(color)
                             } else {
                                 applyStatusBarColor(null)
                             }
@@ -347,8 +358,8 @@ class MainActivity : AppCompatActivity() {
                 try {
                     super.onReceivedError(view, request, error)
                     if (request?.isForMainFrame == true && isFirstPageLoad) {
-                        loadingOverlay?.visibility = View.GONE
                         isFirstPageLoad = false
+                        fadeOutLoadingOverlay()
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in onReceivedError", e)
@@ -504,7 +515,25 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ===== IMPROVED DYNAMIC STATUS BAR HELPERS =====
+    // ===== Smooth fade-out of splash =====
+    private fun fadeOutLoadingOverlay() {
+        val overlay = loadingOverlay ?: return
+
+        val fadeOut = AlphaAnimation(1f, 0f).apply {
+            duration = 400 // milliseconds
+            fillAfter = true
+            setAnimationListener(object : Animation.AnimationListener {
+                override fun onAnimationStart(animation: Animation?) {}
+                override fun onAnimationRepeat(animation: Animation?) {}
+                override fun onAnimationEnd(animation: Animation?) {
+                    overlay.visibility = View.GONE
+                }
+            })
+        }
+        overlay.startAnimation(fadeOut)
+    }
+
+    // ===== DYNAMIC STATUS BAR HELPERS =====
     private fun parseCssColor(cssColor: String): Int? {
         return try {
             when {
@@ -522,15 +551,11 @@ class MainActivity : AppCompatActivity() {
                         val b = values[2].toInt().coerceIn(0, 255)
                         val a = if (values.size >= 4) values[3] else 1f
 
-                        // Treat almost transparent colors as null → keep status bar transparent
                         if (a < 0.35f) return null
-
                         Color.rgb(r, g, b)
                     } else null
                 }
-                cssColor.startsWith("#") -> {
-                    Color.parseColor(cssColor)
-                }
+                cssColor.startsWith("#") -> Color.parseColor(cssColor)
                 else -> null
             }
         } catch (e: Exception) {
@@ -541,7 +566,6 @@ class MainActivity : AppCompatActivity() {
     private fun applyStatusBarColor(color: Int?) {
         try {
             if (color == null) {
-                // Keep transparent
                 window.statusBarColor = Color.TRANSPARENT
                 window.navigationBarColor = Color.TRANSPARENT
                 return
@@ -558,13 +582,10 @@ class MainActivity : AppCompatActivity() {
                 isAppearanceLightNavigationBars = isLightBackground
             }
 
-            // Only apply solid color if it's not very dark
-            // (this prevents the unwanted dark gray you saw)
             if (luminance > 0.18) {
                 window.statusBarColor = color
                 window.navigationBarColor = color
             } else {
-                // Keep transparent for dark pages
                 window.statusBarColor = Color.TRANSPARENT
                 window.navigationBarColor = Color.TRANSPARENT
             }
