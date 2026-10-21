@@ -3,6 +3,7 @@ package com.vauth.webviewapp
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.app.DownloadManager
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,6 +11,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Environment
 import android.os.Message
 import android.util.Log
 import android.view.Gravity
@@ -31,7 +33,10 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 /**
- * Advanced WebView app - Edge-to-edge + Dynamic status bar + App Icon Splash
+ * Advanced WebView app
+ * - Edge-to-edge + Dynamic status bar
+ * - App Icon Splash
+ * - Proper File Download
  * Based on Vauth/android-web
  */
 class MainActivity : AppCompatActivity() {
@@ -158,7 +163,7 @@ class MainActivity : AppCompatActivity() {
                 setBackgroundColor(Color.parseColor("#0F0F0F"))
                 visibility = View.VISIBLE
 
-                val iconSize = (88 * resources.displayMetrics.density).toInt() // \~88dp
+                val iconSize = (88 * resources.displayMetrics.density).toInt()
 
                 val appIcon = ImageView(context).apply {
                     layoutParams = FrameLayout.LayoutParams(iconSize, iconSize).apply {
@@ -260,6 +265,39 @@ class MainActivity : AppCompatActivity() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error configuring WebView settings", e)
+        }
+
+        // ===== FILE DOWNLOAD SUPPORT =====
+        webView?.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
+            try {
+                val request = DownloadManager.Request(Uri.parse(url))
+
+                // Extract filename
+                var fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                if (fileName.isNullOrBlank()) {
+                    fileName = "download_${System.currentTimeMillis()}"
+                }
+
+                request.apply {
+                    setMimeType(mimeType)
+                    addRequestHeader("User-Agent", userAgent)
+                    setDescription("Downloading file...")
+                    setTitle(fileName)
+                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+                    allowScanningByMediaScanner()
+                    setAllowedOverMetered(true)
+                    setAllowedOverRoaming(true)
+                }
+
+                val downloadManager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
+                downloadManager.enqueue(request)
+
+                Toast.makeText(this, "Downloading: $fileName", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Log.e(TAG, "Error starting download", e)
+                Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show()
+            }
         }
 
         webView?.webViewClient = object : WebViewClient() {
