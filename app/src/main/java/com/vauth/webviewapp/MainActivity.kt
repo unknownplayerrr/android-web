@@ -7,13 +7,11 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
-import android.graphics.Typeface
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Message
 import android.util.Log
-import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
@@ -21,7 +19,7 @@ import android.view.animation.AlphaAnimation
 import android.view.animation.Animation
 import android.webkit.*
 import android.widget.FrameLayout
-import android.widget.TextView
+import android.widget.ImageView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,7 +31,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 
 /**
- * Advanced WebView app - Edge-to-edge + Dynamic status bar + Better Splash
+ * Advanced WebView app - Edge-to-edge + Dynamic status bar + App Icon Splash
  * Based on Vauth/android-web
  */
 class MainActivity : AppCompatActivity() {
@@ -133,7 +131,6 @@ class MainActivity : AppCompatActivity() {
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
 
-            // Start with fully transparent bars
             window.statusBarColor = Color.TRANSPARENT
             window.navigationBarColor = Color.TRANSPARENT
 
@@ -145,7 +142,6 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // Create WebView
             webView = WebView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -153,35 +149,29 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            // ===== IMPROVED LOADING / SPLASH SCREEN =====
+            // ===== SPLASH WITH APP ICON =====
             loadingOverlay = FrameLayout(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
-                setBackgroundColor(Color.parseColor("#0F0F0F")) // Clean dark background
+                setBackgroundColor(Color.parseColor("#0F0F0F"))
                 visibility = View.VISIBLE
 
-                // App name text in the center
-                val appNameText = TextView(context).apply {
-                    text = try {
-                        // Try to get the real app name
-                        packageManager.getApplicationLabel(applicationInfo).toString()
-                    } catch (e: Exception) {
-                        "Loading..."
-                    }
-                    setTextColor(Color.WHITE)
-                    setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f)
-                    typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
-                    gravity = Gravity.CENTER
-                    layoutParams = FrameLayout.LayoutParams(
-                        FrameLayout.LayoutParams.WRAP_CONTENT,
-                        FrameLayout.LayoutParams.WRAP_CONTENT
-                    ).apply {
+                val iconSize = (88 * resources.displayMetrics.density).toInt() // \~88dp
+
+                val appIcon = ImageView(context).apply {
+                    layoutParams = FrameLayout.LayoutParams(iconSize, iconSize).apply {
                         gravity = Gravity.CENTER
                     }
+                    try {
+                        setImageDrawable(packageManager.getApplicationIcon(applicationInfo))
+                    } catch (e: Exception) {
+                        setImageResource(android.R.drawable.sym_def_app_icon)
+                    }
+                    scaleType = ImageView.ScaleType.FIT_CENTER
                 }
-                addView(appNameText)
+                addView(appIcon)
             }
 
             container?.addView(webView)
@@ -189,7 +179,7 @@ class MainActivity : AppCompatActivity() {
 
             setContentView(container)
 
-            // ===== Proper insets so content never goes under status bar =====
+            // Proper insets
             container?.let { root ->
                 ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
                     val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
@@ -201,7 +191,6 @@ class MainActivity : AppCompatActivity() {
             setupBackPressHandler()
             setupWebView()
 
-            // Load the configured website URL
             val websiteUrl = BuildConfig.WEBSITE_URL
 
             if (websiteUrl.isNullOrBlank()) {
@@ -282,13 +271,12 @@ class MainActivity : AppCompatActivity() {
                 try {
                     super.onPageFinished(view, url)
 
-                    // Smooth fade-out of the splash screen
                     if (isFirstPageLoad) {
                         isFirstPageLoad = false
                         fadeOutLoadingOverlay()
                     }
 
-                    // ===== DYNAMIC STATUS BAR COLOR =====
+                    // Dynamic status bar
                     view?.evaluateJavascript(
                         """
                         (function() {
@@ -369,7 +357,6 @@ class MainActivity : AppCompatActivity() {
 
         webView?.webChromeClient = object : WebChromeClient() {
 
-            // File upload
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
@@ -398,7 +385,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Geolocation
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String?,
                 callback: GeolocationPermissions.Callback?
@@ -423,7 +409,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Popups
             override fun onCreateWindow(
                 view: WebView?,
                 isDialog: Boolean,
@@ -454,7 +439,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Fullscreen video
             private var customView: View? = null
             private var customViewCallback: CustomViewCallback? = null
 
@@ -481,7 +465,6 @@ class MainActivity : AppCompatActivity() {
                 }
             }
 
-            // Camera / Microphone
             override fun onPermissionRequest(request: PermissionRequest?) {
                 try {
                     request?.let { permRequest ->
@@ -515,12 +498,11 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ===== Smooth fade-out of splash =====
     private fun fadeOutLoadingOverlay() {
         val overlay = loadingOverlay ?: return
 
         val fadeOut = AlphaAnimation(1f, 0f).apply {
-            duration = 400 // milliseconds
+            duration = 400
             fillAfter = true
             setAnimationListener(object : Animation.AnimationListener {
                 override fun onAnimationStart(animation: Animation?) {}
@@ -533,7 +515,6 @@ class MainActivity : AppCompatActivity() {
         overlay.startAnimation(fadeOut)
     }
 
-    // ===== DYNAMIC STATUS BAR HELPERS =====
     private fun parseCssColor(cssColor: String): Int? {
         return try {
             when {
