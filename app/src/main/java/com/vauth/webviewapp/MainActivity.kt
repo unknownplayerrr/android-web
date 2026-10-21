@@ -23,10 +23,10 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
-import androidx.core.view.updatePadding
 
 /**
  * Advanced WebView app - Edge-to-edge + Dynamic status bar
@@ -42,7 +42,7 @@ class MainActivity : AppCompatActivity() {
     private var webView: WebView? = null
     private var container: FrameLayout? = null
     private var loadingOverlay: FrameLayout? = null
-    
+
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
     private var geolocationCallback: GeolocationPermissions.Callback? = null
     private var geolocationOrigin: String? = null
@@ -59,8 +59,8 @@ class MainActivity : AppCompatActivity() {
                 val data = result.data
                 val clipData = data?.clipData
                 val uris = if (clipData != null) {
-                    (0 until clipData.itemCount).map { 
-                        clipData.getItemAt(it).uri 
+                    (0 until clipData.itemCount).map {
+                        clipData.getItemAt(it).uri
                     }.toTypedArray()
                 } else {
                     data?.data?.let { arrayOf(it) } ?: arrayOf()
@@ -84,7 +84,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
                     permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-            
+
             geolocationCallback?.invoke(geolocationOrigin, locationGranted, false)
         } catch (e: Exception) {
             Log.e(TAG, "Error handling geolocation permission result", e)
@@ -101,7 +101,7 @@ class MainActivity : AppCompatActivity() {
     ) { permissions ->
         try {
             val allGranted = permissions.values.all { it }
-            
+
             pendingPermissionRequest?.let { request ->
                 if (allGranted) {
                     request.grant(request.resources)
@@ -119,20 +119,20 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
+
         try {
             // ===== EDGE-TO-EDGE SETUP =====
             WindowCompat.setDecorFitsSystemWindows(window, false)
-            
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                window.attributes.layoutInDisplayCutoutMode = 
+                window.attributes.layoutInDisplayCutoutMode =
                     WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
             }
-            
-            // Make status bar and navigation bar transparent initially
+
+            // Start with fully transparent bars
             window.statusBarColor = Color.TRANSPARENT
             window.navigationBarColor = Color.TRANSPARENT
-            
+
             // ===== CREATE LAYOUT =====
             container = FrameLayout(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
@@ -140,7 +140,7 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
-            
+
             // Create WebView
             webView = WebView(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
@@ -148,8 +148,8 @@ class MainActivity : AppCompatActivity() {
                     FrameLayout.LayoutParams.MATCH_PARENT
                 )
             }
-            
-            // Create loading overlay (we will improve this in next step)
+
+            // Loading overlay (will improve in next step)
             loadingOverlay = FrameLayout(this).apply {
                 layoutParams = FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT,
@@ -157,7 +157,7 @@ class MainActivity : AppCompatActivity() {
                 )
                 setBackgroundColor(Color.parseColor("#121212"))
                 visibility = View.VISIBLE
-                
+
                 val loadingSpinner = ProgressBar(context).apply {
                     layoutParams = FrameLayout.LayoutParams(
                         FrameLayout.LayoutParams.WRAP_CONTENT,
@@ -168,28 +168,31 @@ class MainActivity : AppCompatActivity() {
                 }
                 addView(loadingSpinner)
             }
-            
+
             container?.addView(webView)
             container?.addView(loadingOverlay)
-            
+
             setContentView(container)
-            
-            // Handle system bars insets (so content doesn't go under status bar)
+
+            // ===== IMPORTANT: Proper insets so content never goes under status bar =====
             container?.let { root ->
-                androidx.core.view.ViewCompat.setOnApplyWindowInsetsListener(root) { view, insets ->
+                ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
                     val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-                    // We keep padding 0 for true edge-to-edge
-                    // view.updatePadding(top = systemBars.top)  // uncomment if you want content below status bar
+
+                    // Give WebView top padding = status bar height
+                    // This keeps website buttons fully visible
+                    webView?.setPadding(0, systemBars.top, 0, systemBars.bottom)
+
                     insets
                 }
             }
-            
+
             setupBackPressHandler()
             setupWebView()
-            
+
             // Load the configured website URL
             val websiteUrl = BuildConfig.WEBSITE_URL
-            
+
             if (websiteUrl.isNullOrBlank()) {
                 Log.e(TAG, "Website URL is null or blank, using default")
                 webView?.loadUrl(DEFAULT_URL)
@@ -231,7 +234,7 @@ class MainActivity : AppCompatActivity() {
     private fun setupWebView() {
         try {
             val settings = webView?.settings ?: return
-            
+
             settings.apply {
                 javaScriptEnabled = true
                 domStorageEnabled = true
@@ -250,7 +253,7 @@ class MainActivity : AppCompatActivity() {
                 javaScriptCanOpenWindowsAutomatically = true
                 userAgentString = "$userAgentString WebViewApp/1.0"
             }
-            
+
             CookieManager.getInstance().apply {
                 setAcceptCookie(true)
                 setAcceptThirdPartyCookies(webView, true)
@@ -258,24 +261,23 @@ class MainActivity : AppCompatActivity() {
         } catch (e: Exception) {
             Log.e(TAG, "Error configuring WebView settings", e)
         }
-        
+
         webView?.webViewClient = object : WebViewClient() {
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
             }
-            
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 try {
                     super.onPageFinished(view, url)
-                    
+
                     // Hide loading overlay after first page
                     if (isFirstPageLoad) {
                         loadingOverlay?.visibility = View.GONE
                         isFirstPageLoad = false
                     }
-                    
+
                     // ===== DYNAMIC STATUS BAR COLOR =====
-                    // Get the background color of the page and apply it to status bar
                     view?.evaluateJavascript(
                         """
                         (function() {
@@ -291,25 +293,27 @@ class MainActivity : AppCompatActivity() {
                             if (result != null && result != "null") {
                                 val colorString = result.replace("\"", "").trim()
                                 val color = parseCssColor(colorString)
-                                if (color != null) {
-                                    applyStatusBarColor(color)
-                                }
+                                applyStatusBarColor(color) // now accepts null
+                            } else {
+                                applyStatusBarColor(null)
                             }
                         } catch (e: Exception) {
                             Log.e(TAG, "Error applying status bar color", e)
+                            applyStatusBarColor(null)
                         }
                     }
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in onPageFinished", e)
                 }
             }
-            
+
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 try {
                     val url = request?.url?.toString() ?: return false
-                    
-                    if (url.startsWith("tel:") || url.startsWith("mailto:") || 
-                        url.startsWith("sms:") || url.startsWith("whatsapp:")) {
+
+                    if (url.startsWith("tel:") || url.startsWith("mailto:") ||
+                        url.startsWith("sms:") || url.startsWith("whatsapp:")
+                    ) {
                         try {
                             startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                         } catch (e: Exception) {
@@ -317,7 +321,7 @@ class MainActivity : AppCompatActivity() {
                         }
                         return true
                     }
-                    
+
                     if (url.startsWith("intent:")) {
                         try {
                             val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
@@ -327,15 +331,19 @@ class MainActivity : AppCompatActivity() {
                         }
                         return true
                     }
-                    
+
                     return false
                 } catch (e: Exception) {
                     Log.e(TAG, "Error in shouldOverrideUrlLoading", e)
                     return false
                 }
             }
-            
-            override fun onReceivedError(view: WebView?, request: WebResourceRequest?, error: WebResourceError?) {
+
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
                 try {
                     super.onReceivedError(view, request, error)
                     if (request?.isForMainFrame == true && isFirstPageLoad) {
@@ -347,9 +355,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-        
+
         webView?.webChromeClient = object : WebChromeClient() {
-            
+
             // File upload
             override fun onShowFileChooser(
                 webView: WebView?,
@@ -359,7 +367,7 @@ class MainActivity : AppCompatActivity() {
                 try {
                     fileUploadCallback?.onReceiveValue(null)
                     fileUploadCallback = filePathCallback
-                    
+
                     val intent = fileChooserParams?.createIntent()
                     if (intent != null) {
                         fileChooserLauncher.launch(intent)
@@ -378,7 +386,7 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
             }
-            
+
             // Geolocation
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String?,
@@ -387,12 +395,12 @@ class MainActivity : AppCompatActivity() {
                 try {
                     geolocationOrigin = origin
                     geolocationCallback = callback
-                    
+
                     val permissions = arrayOf(
                         Manifest.permission.ACCESS_FINE_LOCATION,
                         Manifest.permission.ACCESS_COARSE_LOCATION
                     )
-                    
+
                     if (hasPermissions(permissions)) {
                         callback?.invoke(origin, true, false)
                     } else {
@@ -403,7 +411,7 @@ class MainActivity : AppCompatActivity() {
                     callback?.invoke(origin, false, false)
                 }
             }
-            
+
             // Popups
             override fun onCreateWindow(
                 view: WebView?,
@@ -414,13 +422,16 @@ class MainActivity : AppCompatActivity() {
                 try {
                     if (resultMsg == null) return false
                     val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                    
+
                     val newWebView = WebView(this@MainActivity)
                     transport.webView = newWebView
                     resultMsg.sendToTarget()
-                    
+
                     newWebView.webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
                             webView?.loadUrl(request?.url?.toString() ?: "")
                             return true
                         }
@@ -431,11 +442,11 @@ class MainActivity : AppCompatActivity() {
                     return false
                 }
             }
-            
+
             // Fullscreen video
             private var customView: View? = null
             private var customViewCallback: CustomViewCallback? = null
-            
+
             override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
                 try {
                     customView = view
@@ -446,7 +457,7 @@ class MainActivity : AppCompatActivity() {
                     Log.e(TAG, "Error showing custom view", e)
                 }
             }
-            
+
             override fun onHideCustomView() {
                 try {
                     container?.removeView(customView)
@@ -458,13 +469,13 @@ class MainActivity : AppCompatActivity() {
                     Log.e(TAG, "Error hiding custom view", e)
                 }
             }
-            
+
             // Camera / Microphone
             override fun onPermissionRequest(request: PermissionRequest?) {
                 try {
                     request?.let { permRequest ->
                         val permissions = mutableListOf<String>()
-                        
+
                         permRequest.resources.forEach { resource ->
                             when (resource) {
                                 PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
@@ -475,7 +486,7 @@ class MainActivity : AppCompatActivity() {
                                 }
                             }
                         }
-                        
+
                         if (permissions.isEmpty()) {
                             permRequest.grant(permRequest.resources)
                         } else if (hasPermissions(permissions.toTypedArray())) {
@@ -493,7 +504,7 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // ===== DYNAMIC STATUS BAR HELPERS =====
+    // ===== IMPROVED DYNAMIC STATUS BAR HELPERS =====
     private fun parseCssColor(cssColor: String): Int? {
         return try {
             when {
@@ -504,15 +515,22 @@ class MainActivity : AppCompatActivity() {
                         .replace(")", "")
                         .split(",")
                         .map { it.trim().toFloatOrNull() ?: 0f }
-                    
+
                     if (values.size >= 3) {
                         val r = values[0].toInt().coerceIn(0, 255)
                         val g = values[1].toInt().coerceIn(0, 255)
                         val b = values[2].toInt().coerceIn(0, 255)
+                        val a = if (values.size >= 4) values[3] else 1f
+
+                        // Treat almost transparent colors as null → keep status bar transparent
+                        if (a < 0.35f) return null
+
                         Color.rgb(r, g, b)
                     } else null
                 }
-                cssColor.startsWith("#") -> Color.parseColor(cssColor)
+                cssColor.startsWith("#") -> {
+                    Color.parseColor(cssColor)
+                }
                 else -> null
             }
         } catch (e: Exception) {
@@ -520,29 +538,46 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun applyStatusBarColor(color: Int) {
+    private fun applyStatusBarColor(color: Int?) {
         try {
-            window.statusBarColor = color
-            
-            // Decide if status bar icons should be light or dark
-            val luminance = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)) / 255
-            val isLightBackground = luminance > 0.5
-            
+            if (color == null) {
+                // Keep transparent
+                window.statusBarColor = Color.TRANSPARENT
+                window.navigationBarColor = Color.TRANSPARENT
+                return
+            }
+
+            val luminance = (0.299 * Color.red(color) +
+                    0.587 * Color.green(color) +
+                    0.114 * Color.blue(color)) / 255
+
+            val isLightBackground = luminance > 0.55
+
             WindowInsetsControllerCompat(window, window.decorView).apply {
                 isAppearanceLightStatusBars = isLightBackground
                 isAppearanceLightNavigationBars = isLightBackground
             }
-            
-            // Also set navigation bar color to match (optional but looks better)
-            window.navigationBarColor = color
+
+            // Only apply solid color if it's not very dark
+            // (this prevents the unwanted dark gray you saw)
+            if (luminance > 0.18) {
+                window.statusBarColor = color
+                window.navigationBarColor = color
+            } else {
+                // Keep transparent for dark pages
+                window.statusBarColor = Color.TRANSPARENT
+                window.navigationBarColor = Color.TRANSPARENT
+            }
         } catch (e: Exception) {
             Log.e(TAG, "Error applying status bar color", e)
+            window.statusBarColor = Color.TRANSPARENT
+            window.navigationBarColor = Color.TRANSPARENT
         }
     }
 
     private fun hasPermissions(permissions: Array<String>): Boolean {
-        return permissions.all { 
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED 
+        return permissions.all {
+            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -577,9 +612,9 @@ class MainActivity : AppCompatActivity() {
             geolocationCallback = null
             pendingPermissionRequest?.deny()
             pendingPermissionRequest = null
-            
+
             CookieManager.getInstance().flush()
-            
+
             webView?.let { wv ->
                 wv.loadUrl("about:blank")
                 wv.onPause()
