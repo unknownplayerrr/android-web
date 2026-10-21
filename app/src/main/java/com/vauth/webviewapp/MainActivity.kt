@@ -185,8 +185,6 @@ class MainActivity : AppCompatActivity() {
             container?.addView(progressBar)
             container?.addView(loadingOverlay)
             
-            // Create floating action buttons
-            createFloatingButtons()
             
             setContentView(container)
             
@@ -212,92 +210,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun createFloatingButtons() {
-        try {
-            val fabMargin = resources.getDimensionPixelSize(R.dimen.fab_margin)
-            val fabSize = resources.getDimensionPixelSize(R.dimen.fab_size)
-            val fabButtonSpacing = resources.getDimensionPixelSize(R.dimen.fab_button_spacing)
-            
-            // Calculate offset for stacked button positioning
-            val buttonOffset = fabSize + fabButtonSpacing
-            
-            // GitHub button - bottom left (first button)
-            fabGithub = FloatingActionButton(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    gravity = Gravity.BOTTOM or Gravity.START
-                    setMargins(fabMargin, 0, 0, fabMargin)
-                }
-                setImageResource(R.drawable.ic_github)
-                backgroundTintList = ContextCompat.getColorStateList(context, R.color.fabGithub)
-                setOnClickListener {
-                    try {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(GITHUB_URL))
-                        startActivity(intent)
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error opening GitHub URL", e)
-                        Toast.makeText(this@MainActivity, "Cannot open browser", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
-            
-            // Back button - above GitHub button on the left
-            fabBack = FloatingActionButton(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    gravity = Gravity.BOTTOM or Gravity.START
-                    setMargins(fabMargin, 0, 0, fabMargin + buttonOffset)
-                }
-                setImageResource(R.drawable.ic_arrow_back)
-                backgroundTintList = ContextCompat.getColorStateList(context, R.color.fabBack)
-                setOnClickListener {
-                    try {
-                        if (webView?.canGoBack() == true) {
-                            webView?.goBack()
-                        } else {
-                            Toast.makeText(this@MainActivity, "No previous page", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error navigating back", e)
-                    }
-                }
-            }
-            
-            // Forward button - above Back button on the left
-            fabForward = FloatingActionButton(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.WRAP_CONTENT,
-                    FrameLayout.LayoutParams.WRAP_CONTENT
-                ).apply {
-                    gravity = Gravity.BOTTOM or Gravity.START
-                    setMargins(fabMargin, 0, 0, fabMargin + buttonOffset * 2)
-                }
-                setImageResource(R.drawable.ic_arrow_forward)
-                backgroundTintList = ContextCompat.getColorStateList(context, R.color.fabForward)
-                setOnClickListener {
-                    try {
-                        if (webView?.canGoForward() == true) {
-                            webView?.goForward()
-                        } else {
-                            Toast.makeText(this@MainActivity, "No next page", Toast.LENGTH_SHORT).show()
-                        }
-                    } catch (e: Exception) {
-                        Log.e(TAG, "Error navigating forward", e)
-                    }
-                }
-            }
-            
-            container?.addView(fabGithub)
-            container?.addView(fabBack)
-            container?.addView(fabForward)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error creating floating buttons", e)
-        }
-    }
 
     private fun setupBackPressHandler() {
         try {
