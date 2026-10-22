@@ -68,22 +68,24 @@ jobs:
       - name: Create settings.gradle
         run: |
           SANITIZED_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
-          echo "pluginManagement {" > settings.gradle
-          echo "    repositories {" >> settings.gradle
-          echo "        google()" >> settings.gradle
-          echo "        mavenCentral()" >> settings.gradle
-          echo "        gradlePluginPortal()" >> settings.gradle
-          echo "    }" >> settings.gradle
-          echo "}" >> settings.gradle
-          echo "dependencyResolutionManagement {" >> settings.gradle
-          echo "    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)" >> settings.gradle
-          echo "    repositories {" >> settings.gradle
-          echo "        google()" >> settings.gradle
-          echo "        mavenCentral()" >> settings.gradle
-          echo "    }" >> settings.gradle
-          echo "}" >> settings.gradle
-          echo "rootProject.name = '${SANITIZED_NAME}'" >> settings.gradle
-          echo "include ':app'" >> settings.gradle
+          cat > settings.gradle << EOF
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = '$SANITIZED_NAME'
+          include ':app'
+          EOF
 
       - name: Decode Keystore
         run: |
@@ -103,10 +105,10 @@ jobs:
           export APP_NAME="${{ inputs.app_name }}"
           export WEBSITE_URL="${{ inputs.website_url }}"
           PACKAGE_SUFFIX=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
-          export PACKAGE_SUFFIX="${PACKAGE_SUFFIX}"
+          export PACKAGE_SUFFIX="$PACKAGE_SUFFIX"
 
-          # Create signing config
-          cat >> app/build.gradle << EOF
+          # Add signing config to build.gradle
+          cat >> app/build.gradle << 'EOF'
 
           android {
               signingConfigs {
@@ -149,7 +151,7 @@ jobs:
             **App Name:** ${{ inputs.app_name }}
             **Website URL:** ${{ inputs.website_url }}
             **Logo URL:** ${{ inputs.app_icon_url }}
-            **Signed with permanent keystore** – updates will work
+            Signed with permanent keystore – updates will work
           files: ${{ steps.prepare_release.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
