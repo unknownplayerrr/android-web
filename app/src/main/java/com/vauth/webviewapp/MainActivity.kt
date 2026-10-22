@@ -13,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Environment
 import android.os.Message
+import android.provider.MediaStore
 import android.util.Log
 import android.view.Gravity
 import android.view.View
@@ -31,11 +32,13 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+
 /**
  * Advanced WebView app
  * - Edge-to-edge + Dynamic status bar
  * - App Icon Splash
  * - Proper File Download
+ * - Improved File Upload + Camera support
  * Based on Vauth/android-web
  */
 class MainActivity : AppCompatActivity() {
@@ -183,11 +186,15 @@ class MainActivity : AppCompatActivity() {
 
             setContentView(container)
 
-            // Proper insets
+            // ===== Proper insets + a little extra top padding =====
             container?.let { root ->
                 ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
                     val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-                    webView?.setPadding(0, systemBars.top, 0, systemBars.bottom)
+
+                    // Extra 6dp so the website top bar sits a bit lower under the status icons
+                    val extraTop = (6 * resources.displayMetrics.density).toInt()
+                    webView?.setPadding(0, systemBars.top + extraTop, 0, systemBars.bottom)
+
                     insets
                 }
             }
@@ -271,7 +278,6 @@ class MainActivity : AppCompatActivity() {
             try {
                 val request = DownloadManager.Request(Uri.parse(url))
 
-                // Extract filename
                 var fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
                 if (fileName.isNullOrBlank()) {
                     fileName = "download_${System.currentTimeMillis()}"
@@ -394,6 +400,7 @@ class MainActivity : AppCompatActivity() {
 
         webView?.webChromeClient = object : WebChromeClient() {
 
+            // ===== IMPROVED FILE UPLOAD + CAMERA =====
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
@@ -403,17 +410,34 @@ class MainActivity : AppCompatActivity() {
                     fileUploadCallback?.onReceiveValue(null)
                     fileUploadCallback = filePathCallback
 
-                    val intent = fileChooserParams?.createIntent()
-                    if (intent != null) {
-                        fileChooserLauncher.launch(intent)
-                    } else {
-                        val chooserIntent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                            addCategory(Intent.CATEGORY_OPENABLE)
-                            type = "*/*"
-                            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+                    val acceptTypes = fileChooserParams?.acceptTypes
+                    val allowMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+
+                    // Try to create a better chooser that includes Camera when possible
+                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = if (!acceptTypes.isNullOrEmpty() && acceptTypes[0].isNotBlank()) {
+                            acceptTypes[0]
+                        } else {
+                            "*/*"
                         }
-                        fileChooserLauncher.launch(chooserIntent)
+                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
                     }
+
+                    // Also offer camera if the accept type looks like image/video
+                    val isImageOrVideo = acceptTypes?.any {
+                        it.contains("image") || it.contains("video") || it == "*/*"
+                    } == true || acceptTypes.isNullOrEmpty()
+
+                    if (isImageOrVideo) {
+                        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+                        val chooser = Intent.createChooser(intent, "Select file")
+                        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                        fileChooserLauncher.launch(chooser)
+                    } else {
+                        fileChooserLauncher.launch(Intent.createChooser(intent, "Select file"))
+                    }
+
                     return true
                 } catch (e: Exception) {
                     Log.e(TAG, "Error showing file chooser", e)
