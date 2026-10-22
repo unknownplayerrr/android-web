@@ -51,13 +51,8 @@ jobs:
 
       - name: Download and Process App Icon
         run: |
-          # Download the icon
           curl -L -o icon_original.png "${{ inputs.app_icon_url }}"
-          
-          # Install ImageMagick for image processing
           sudo apt-get update && sudo apt-get install -y imagemagick
-          
-          # Create icons for different densities
           convert icon_original.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
           convert icon_original.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
           convert icon_original.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
@@ -66,17 +61,13 @@ jobs:
 
       - name: Configure App Settings
         run: |
-          # Create the app configuration file
           echo "APP_NAME=${{ inputs.app_name }}" > app/app.properties
           echo "WEBSITE_URL=${{ inputs.website_url }}" >> app/app.properties
-          
-          # Update AndroidManifest.xml with app name
           sed -i 's/android:label="[^"]*"/android:label="${{ inputs.app_name }}"/g' app/src/main/AndroidManifest.xml
 
       - name: Create settings.gradle
         run: |
-          # Sanitize app name for project name (remove special chars, replace spaces)
-          SANITIZED_NAME=$(echo "${{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
+          SANITIZED_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
           echo "pluginManagement {" > settings.gradle
           echo "    repositories {" >> settings.gradle
           echo "        google()" >> settings.gradle
@@ -94,37 +85,59 @@ jobs:
           echo "rootProject.name = '${SANITIZED_NAME}'" >> settings.gradle
           echo "include ':app'" >> settings.gradle
 
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-release-key.jks
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
 
-      - name: Build Debug APK
+      - name: Build Signed Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           export APP_NAME="${{ inputs.app_name }}"
           export WEBSITE_URL="${{ inputs.website_url }}"
-          # Generate unique package suffix from app name
-          PACKAGE_SUFFIX=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
+          PACKAGE_SUFFIX=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
           export PACKAGE_SUFFIX="${PACKAGE_SUFFIX}"
-          gradle :app:assembleDebug --no-daemon
+
+          # Create signing config
+          cat >> app/build.gradle << EOF
+
+          android {
+              signingConfigs {
+                  release {
+                      storeFile file("../my-release-key.jks")
+                      storePassword System.getenv("KEYSTORE_PASSWORD")
+                      keyAlias System.getenv("KEY_ALIAS")
+                      keyPassword System.getenv("KEY_PASSWORD")
+                  }
+              }
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.release
+                      minifyEnabled false
+                  }
+              }
+          }
+          EOF
+
+          gradle :app:assembleRelease --no-daemon
 
       - name: Prepare Release
         id: prepare_release
         run: |
-          # Create a sanitized tag name from app name
-          # Replace spaces with dashes, remove special characters, convert to lowercase
-          TAG_NAME=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | head -c 50)
-          
-          # Add timestamp to make tag unique
+          TAG_NAME=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | head -c 50)
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          TAG_NAME="${TAG_NAME}-${TIMESTAMP}"
-          
+          TAG_NAME="\( {TAG_NAME}- \){TIMESTAMP}"
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=${{ inputs.app_name }}" >> $GITHUB_OUTPUT
-          
-          # Rename APK to match app name
-          SAFE_NAME=$(echo "${{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
-          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_NAME}.apk"
+          SAFE_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
+          cp app/build/outputs/apk/release/app-release.apk "${SAFE_NAME}.apk"
           echo "apk_path=${SAFE_NAME}.apk" >> $GITHUB_OUTPUT
 
       - name: Create Release
@@ -136,6 +149,7 @@ jobs:
             **App Name:** ${{ inputs.app_name }}
             **Website URL:** ${{ inputs.website_url }}
             **Logo URL:** ${{ inputs.app_icon_url }}
+            **Signed with permanent keystore** – updates will work
           files: ${{ steps.prepare_release.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
