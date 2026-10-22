@@ -87,48 +87,36 @@ jobs:
           include ':app'
           EOF
 
-      - name: Decode Keystore
+      - name: Create Fixed Debug Keystore
         run: |
-          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > my-release-key.jks
+          # This always creates the EXACT same keystore → updates will work
+          keytool -genkeypair -v \
+            -keystore debug.keystore \
+            -alias androiddebugkey \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass android \
+            -keypass android \
+            -dname "CN=Android Debug,O=Android,C=US"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
 
-      - name: Build Signed Release APK
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+      - name: Build Debug APK with Fixed Keystore
         run: |
           export APP_NAME="${{ inputs.app_name }}"
           export WEBSITE_URL="${{ inputs.website_url }}"
           PACKAGE_SUFFIX=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
           export PACKAGE_SUFFIX="$PACKAGE_SUFFIX"
 
-          # Add signing config to build.gradle
-          cat >> app/build.gradle << 'EOF'
+          # Force Gradle to use our fixed debug.keystore
+          mkdir -p \~/.android
+          cp debug.keystore \~/.android/debug.keystore
 
-          android {
-              signingConfigs {
-                  release {
-                      storeFile file("../my-release-key.jks")
-                      storePassword System.getenv("KEYSTORE_PASSWORD")
-                      keyAlias System.getenv("KEY_ALIAS")
-                      keyPassword System.getenv("KEY_PASSWORD")
-                  }
-              }
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.release
-                      minifyEnabled false
-                  }
-              }
-          }
-          EOF
-
-          gradle :app:assembleRelease --no-daemon
+          gradle :app:assembleDebug --no-daemon
 
       - name: Prepare Release
         id: prepare_release
@@ -139,7 +127,7 @@ jobs:
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=${{ inputs.app_name }}" >> $GITHUB_OUTPUT
           SAFE_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
-          cp app/build/outputs/apk/release/app-release.apk "${SAFE_NAME}.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_NAME}.apk"
           echo "apk_path=${SAFE_NAME}.apk" >> $GITHUB_OUTPUT
 
       - name: Create Release
@@ -151,7 +139,7 @@ jobs:
             **App Name:** ${{ inputs.app_name }}
             **Website URL:** ${{ inputs.website_url }}
             **Logo URL:** ${{ inputs.app_icon_url }}
-            Signed with permanent keystore – updates will work
+            Signed with fixed debug keystore – updates should work
           files: ${{ steps.prepare_release.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
