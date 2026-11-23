@@ -51,8 +51,13 @@ jobs:
 
       - name: Download and Process App Icon
         run: |
+          # Download the icon
           curl -L -o icon_original.png "${{ inputs.app_icon_url }}"
+          
+          # Install ImageMagick for image processing
           sudo apt-get update && sudo apt-get install -y imagemagick
+          
+          # Create icons for different densities
           convert icon_original.png -resize 48x48 app/src/main/res/mipmap-mdpi/ic_launcher.png
           convert icon_original.png -resize 72x72 app/src/main/res/mipmap-hdpi/ic_launcher.png
           convert icon_original.png -resize 96x96 app/src/main/res/mipmap-xhdpi/ic_launcher.png
@@ -61,72 +66,64 @@ jobs:
 
       - name: Configure App Settings
         run: |
+          # Create the app configuration file
           echo "APP_NAME=${{ inputs.app_name }}" > app/app.properties
           echo "WEBSITE_URL=${{ inputs.website_url }}" >> app/app.properties
+          
+          # Update AndroidManifest.xml with app name
           sed -i 's/android:label="[^"]*"/android:label="${{ inputs.app_name }}"/g' app/src/main/AndroidManifest.xml
 
       - name: Create settings.gradle
         run: |
-          SANITIZED_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
-          cat > settings.gradle << EOF
-          pluginManagement {
-              repositories {
-                  google()
-                  mavenCentral()
-                  gradlePluginPortal()
-              }
-          }
-          dependencyResolutionManagement {
-              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-              repositories {
-                  google()
-                  mavenCentral()
-              }
-          }
-          rootProject.name = '$SANITIZED_NAME'
-          include ':app'
-          EOF
-
-      - name: Create Fixed Debug Keystore
-        run: |
-          # This always creates the EXACT same keystore → updates will work
-          keytool -genkeypair -v \
-            -keystore debug.keystore \
-            -alias androiddebugkey \
-            -keyalg RSA \
-            -keysize 2048 \
-            -validity 10000 \
-            -storepass android \
-            -keypass android \
-            -dname "CN=Android Debug,O=Android,C=US"
+          # Sanitize app name for project name (remove special chars, replace spaces)
+          SANITIZED_NAME=$(echo "${{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
+          echo "pluginManagement {" > settings.gradle
+          echo "    repositories {" >> settings.gradle
+          echo "        google()" >> settings.gradle
+          echo "        mavenCentral()" >> settings.gradle
+          echo "        gradlePluginPortal()" >> settings.gradle
+          echo "    }" >> settings.gradle
+          echo "}" >> settings.gradle
+          echo "dependencyResolutionManagement {" >> settings.gradle
+          echo "    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)" >> settings.gradle
+          echo "    repositories {" >> settings.gradle
+          echo "        google()" >> settings.gradle
+          echo "        mavenCentral()" >> settings.gradle
+          echo "    }" >> settings.gradle
+          echo "}" >> settings.gradle
+          echo "rootProject.name = '${SANITIZED_NAME}'" >> settings.gradle
+          echo "include ':app'" >> settings.gradle
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
 
-      - name: Build Debug APK with Fixed Keystore
+      - name: Build Debug APK
         run: |
           export APP_NAME="${{ inputs.app_name }}"
           export WEBSITE_URL="${{ inputs.website_url }}"
-          PACKAGE_SUFFIX=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
-          export PACKAGE_SUFFIX="$PACKAGE_SUFFIX"
-
-          # Force Gradle to use our fixed debug.keystore
-          mkdir -p \~/.android
-          cp debug.keystore \~/.android/debug.keystore
-
+          # Generate unique package suffix from app name
+          PACKAGE_SUFFIX=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]' | head -c 20)
+          export PACKAGE_SUFFIX="${PACKAGE_SUFFIX}"
           gradle :app:assembleDebug --no-daemon
 
       - name: Prepare Release
         id: prepare_release
         run: |
-          TAG_NAME=\( (echo " \){{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | head -c 50)
+          # Create a sanitized tag name from app name
+          # Replace spaces with dashes, remove special characters, convert to lowercase
+          TAG_NAME=$(echo "${{ inputs.app_name }}" | tr '[:upper:]' '[:lower:]' | tr ' ' '-' | tr -cd '[:alnum:]-' | head -c 50)
+          
+          # Add timestamp to make tag unique
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-          TAG_NAME="\( {TAG_NAME}- \){TIMESTAMP}"
+          TAG_NAME="${TAG_NAME}-${TIMESTAMP}"
+          
           echo "tag_name=${TAG_NAME}" >> $GITHUB_OUTPUT
           echo "release_name=${{ inputs.app_name }}" >> $GITHUB_OUTPUT
-          SAFE_NAME=\( (echo " \){{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
+          
+          # Rename APK to match app name
+          SAFE_NAME=$(echo "${{ inputs.app_name }}" | tr ' ' '_' | tr -cd '[:alnum:]_')
           cp app/build/outputs/apk/debug/app-debug.apk "${SAFE_NAME}.apk"
           echo "apk_path=${SAFE_NAME}.apk" >> $GITHUB_OUTPUT
 
@@ -139,7 +136,6 @@ jobs:
             **App Name:** ${{ inputs.app_name }}
             **Website URL:** ${{ inputs.website_url }}
             **Logo URL:** ${{ inputs.app_icon_url }}
-            Signed with fixed debug keystore – updates should work
           files: ${{ steps.prepare_release.outputs.apk_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
