@@ -1,3 +1,4 @@
+
 package com.vauth.webviewapp
 
 import android.Manifest
@@ -19,7 +20,6 @@ import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
 import android.view.animation.AlphaAnimation
-import android.view.animation.Animation
 import android.webkit.*
 import android.widget.FrameLayout
 import android.widget.ImageView
@@ -28,357 +28,591 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.io.File
 
-/**
- * Advanced WebView app
- * - Edge-to-edge + Dynamic status bar
- * - App Icon Splash
- * - Proper File Download
- * - Improved File Upload + Camera support
- * Based on Vauth/android-web
- */
 class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
         private const val DEFAULT_URL = "https://example.com"
+
+        // Glass status bar color
+        private const val STATUS_BAR_COLOR = "#660A0014"
     }
 
     private var webView: WebView? = null
     private var container: FrameLayout? = null
     private var loadingOverlay: FrameLayout? = null
+    private var statusBarOverlay: View? = null
 
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
+    private var cameraImageUri: Uri? = null
+
     private var geolocationCallback: GeolocationPermissions.Callback? = null
     private var geolocationOrigin: String? = null
+
     private var pendingPermissionRequest: PermissionRequest? = null
+
+    private var customView: View? = null
+    private var customViewCallback: WebChromeClient.CustomViewCallback? = null
+
     private var isDestroyed = false
     private var isFirstPageLoad = true
 
-    // File chooser launcher
-    private val fileChooserLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult()
-    ) { result ->
-        try {
-            if (result.resultCode == Activity.RESULT_OK) {
-                val data = result.data
-                val clipData = data?.clipData
-                val uris = if (clipData != null) {
-                    (0 until clipData.itemCount).map {
-                        clipData.getItemAt(it).uri
-                    }.toTypedArray()
-                } else {
-                    data?.data?.let { arrayOf(it) } ?: arrayOf()
-                }
-                fileUploadCallback?.onReceiveValue(uris)
-            } else {
-                fileUploadCallback?.onReceiveValue(null)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling file chooser result", e)
-            fileUploadCallback?.onReceiveValue(null)
-        } finally {
+    // =========================================================
+    // FILE CHOOSER
+    // =========================================================
+
+    private val fileChooserLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.StartActivityForResult()
+        ) { result ->
+
+            val callback = fileUploadCallback
             fileUploadCallback = null
+
+            try {
+                if (result.resultCode == Activity.RESULT_OK) {
+
+                    val data = result.data
+                    val clipData = data?.clipData
+
+                    val uris = when {
+                        clipData != null -> {
+                            (0 until clipData.itemCount)
+                                .map { clipData.getItemAt(it).uri }
+                                .toTypedArray()
+                        }
+
+                        data?.data != null -> {
+                            arrayOf(data.data!!)
+                        }
+
+                        cameraImageUri != null -> {
+                            arrayOf(cameraImageUri!!)
+                        }
+
+                        else -> emptyArray()
+                    }
+
+                    callback?.onReceiveValue(
+                        uris.takeIf { it.isNotEmpty() }
+                    )
+
+                } else {
+                    callback?.onReceiveValue(null)
+                }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "File chooser error", e)
+                callback?.onReceiveValue(null)
+
+            } finally {
+                if (result.resultCode != Activity.RESULT_OK) {
+                    cameraImageUri = null
+                }
+            }
         }
-    }
 
-    // Permission request launcher for geolocation
-    private val geolocationPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        try {
-            val locationGranted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-                    permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+    // =========================================================
+    // GEOLOCATION PERMISSIONS
+    // =========================================================
 
-            geolocationCallback?.invoke(geolocationOrigin, locationGranted, false)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling geolocation permission result", e)
-            geolocationCallback?.invoke(geolocationOrigin, false, false)
-        } finally {
+    private val geolocationPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val granted =
+                permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+
+            geolocationCallback?.invoke(
+                geolocationOrigin,
+                granted,
+                false
+            )
+
             geolocationCallback = null
             geolocationOrigin = null
         }
-    }
 
-    // Permission request launcher for camera/microphone
-    private val mediaPermissionLauncher = registerForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { permissions ->
-        try {
-            val allGranted = permissions.values.all { it }
+    // =========================================================
+    // CAMERA AND MICROPHONE PERMISSIONS
+    // =========================================================
 
-            pendingPermissionRequest?.let { request ->
+    private val mediaPermissionLauncher =
+        registerForActivityResult(
+            ActivityResultContracts.RequestMultiplePermissions()
+        ) { permissions ->
+
+            val request = pendingPermissionRequest
+            pendingPermissionRequest = null
+
+            try {
+                if (request == null) return@registerForActivityResult
+
+                val allGranted = permissions.values.all { it }
+
                 if (allGranted) {
                     request.grant(request.resources)
                 } else {
                     request.deny()
                 }
+
+            } catch (e: Exception) {
+                Log.e(TAG, "Media permission error", e)
+                request?.deny()
             }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error handling media permission result", e)
-            pendingPermissionRequest?.deny()
-        } finally {
-            pendingPermissionRequest = null
         }
-    }
+
+    // =========================================================
+    // ACTIVITY CREATION
+    // =========================================================
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         try {
-            // ===== EDGE-TO-EDGE SETUP =====
-            WindowCompat.setDecorFitsSystemWindows(window, false)
+            setupEdgeToEdge()
+            createLayout()
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                window.attributes.layoutInDisplayCutoutMode =
-                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-            }
-
-            window.statusBarColor = Color.TRANSPARENT
-            window.navigationBarColor = Color.TRANSPARENT
-
-            // ===== CREATE LAYOUT =====
-            container = FrameLayout(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-            }
-
-            webView = WebView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-            }
-
-            // ===== SPLASH WITH APP ICON =====
-            loadingOverlay = FrameLayout(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    FrameLayout.LayoutParams.MATCH_PARENT,
-                    FrameLayout.LayoutParams.MATCH_PARENT
-                )
-                setBackgroundColor(Color.parseColor("#0F0F0F"))
-                visibility = View.VISIBLE
-
-                val iconSize = (88 * resources.displayMetrics.density).toInt()
-
-                val appIcon = ImageView(context).apply {
-                    layoutParams = FrameLayout.LayoutParams(iconSize, iconSize).apply {
-                        gravity = Gravity.CENTER
-                    }
-                    try {
-                        setImageDrawable(packageManager.getApplicationIcon(applicationInfo))
-                    } catch (e: Exception) {
-                        setImageResource(android.R.drawable.sym_def_app_icon)
-                    }
-                    scaleType = ImageView.ScaleType.FIT_CENTER
-                }
-                addView(appIcon)
-            }
-
-            container?.addView(webView)
-            container?.addView(loadingOverlay)
-
-            setContentView(container)
-
-            // ===== Proper insets + a little extra top padding =====
-            container?.let { root ->
-                ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
-                    val systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-
-                    // Extra 6dp so the website top bar sits a bit lower under the status icons
-                    val extraTop = (6 * resources.displayMetrics.density).toInt()
-                    webView?.setPadding(0, systemBars.top + extraTop, 0, systemBars.bottom)
-
-                    insets
-                }
-            }
-
+            setupInsets()
             setupBackPressHandler()
             setupWebView()
 
             val websiteUrl = BuildConfig.WEBSITE_URL
+                .trim()
+                .ifBlank { DEFAULT_URL }
 
-            if (websiteUrl.isNullOrBlank()) {
-                Log.e(TAG, "Website URL is null or blank, using default")
-                webView?.loadUrl(DEFAULT_URL)
-                Toast.makeText(this, "Configuration error, using default URL", Toast.LENGTH_LONG).show()
-            } else {
-                webView?.loadUrl(websiteUrl)
-            }
+            webView?.loadUrl(websiteUrl)
+
         } catch (e: Exception) {
-            Log.e(TAG, "Critical error in onCreate", e)
-            Toast.makeText(this, "Failed to initialize app: ${e.message}", Toast.LENGTH_LONG).show()
+            Log.e(TAG, "Initialization error", e)
+
+            Toast.makeText(
+                this,
+                "Failed to initialize app",
+                Toast.LENGTH_LONG
+            ).show()
+
             finish()
         }
     }
 
+    // =========================================================
+    // EDGE-TO-EDGE
+    // =========================================================
+
+    private fun setupEdgeToEdge() {
+
+        WindowCompat.setDecorFitsSystemWindows(
+            window,
+            false
+        )
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes =
+                window.attributes.apply {
+                    layoutInDisplayCutoutMode =
+                        WindowManager.LayoutParams
+                            .LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                }
+        }
+
+        window.statusBarColor = Color.TRANSPARENT
+        window.navigationBarColor = Color.TRANSPARENT
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            window.isStatusBarContrastEnforced = false
+            window.isNavigationBarContrastEnforced = false
+        }
+
+        WindowInsetsControllerCompat(
+            window,
+            window.decorView
+        ).apply {
+
+            isAppearanceLightStatusBars = false
+            isAppearanceLightNavigationBars = false
+        }
+    }
+
+    // =========================================================
+    // CREATE APP LAYOUT
+    // =========================================================
+
+    private fun createLayout() {
+
+        container = FrameLayout(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+        }
+
+        // WebView
+        webView = WebView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            setBackgroundColor(Color.TRANSPARENT)
+        }
+
+        // Status bar glass overlay
+        statusBarOverlay = View(this).apply {
+
+            setBackgroundColor(
+                Color.parseColor(STATUS_BAR_COLOR)
+            )
+
+            elevation =
+                10f * resources.displayMetrics.density
+
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                0,
+                Gravity.TOP
+            )
+        }
+
+        // Splash screen
+        loadingOverlay = FrameLayout(this).apply {
+
+            layoutParams = FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.MATCH_PARENT,
+                FrameLayout.LayoutParams.MATCH_PARENT
+            )
+
+            setBackgroundColor(
+                Color.parseColor("#0A0014")
+            )
+
+            visibility = View.VISIBLE
+
+            val iconSize =
+                (88 * resources.displayMetrics.density).toInt()
+
+            val appIcon = ImageView(context).apply {
+
+                layoutParams = FrameLayout.LayoutParams(
+                    iconSize,
+                    iconSize,
+                    Gravity.CENTER
+                )
+
+                try {
+                    setImageDrawable(
+                        packageManager.getApplicationIcon(applicationInfo)
+                    )
+                } catch (e: Exception) {
+                    setImageResource(
+                        android.R.drawable.sym_def_app_icon
+                    )
+                }
+
+                scaleType = ImageView.ScaleType.FIT_CENTER
+            }
+
+            addView(appIcon)
+        }
+
+        // Layer order matters
+        container?.apply {
+
+            addView(webView)
+            addView(statusBarOverlay)
+            addView(loadingOverlay)
+        }
+
+        setContentView(container)
+    }
+
+    // =========================================================
+    // SYSTEM BAR INSETS
+    // =========================================================
+
+    private fun setupInsets() {
+
+        container?.let { root ->
+
+            ViewCompat.setOnApplyWindowInsetsListener(root) { _, insets ->
+
+                val statusBars = insets.getInsets(
+                    WindowInsetsCompat.Type.statusBars()
+                )
+
+                val navigationBars = insets.getInsets(
+                    WindowInsetsCompat.Type.navigationBars()
+                )
+
+                val density =
+                    resources.displayMetrics.density
+
+                // Extra space below time/network/battery icons
+                val extraTop = (6 * density).toInt()
+
+                // Keep website controls clear of system UI
+                webView?.setPadding(
+                    0,
+                    statusBars.top + extraTop,
+                    0,
+                    navigationBars.bottom
+                )
+
+                // Dynamic status bar height
+                statusBarOverlay?.layoutParams =
+                    statusBarOverlay?.layoutParams?.apply {
+                        height = statusBars.top
+                    }
+
+                insets
+            }
+
+            ViewCompat.requestApplyInsets(root)
+        }
+    }
+
+    // =========================================================
+    // BACK BUTTON
+    // =========================================================
+
     private fun setupBackPressHandler() {
-        try {
-            onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+
                 override fun handleOnBackPressed() {
+
                     try {
+
+                        if (customView != null) {
+                            hideCustomView()
+                            return
+                        }
+
                         if (webView?.canGoBack() == true) {
                             webView?.goBack()
                         } else {
                             isEnabled = false
                             onBackPressedDispatcher.onBackPressed()
                         }
+
                     } catch (e: Exception) {
-                        Log.e(TAG, "Error handling back press", e)
+                        Log.e(TAG, "Back navigation error", e)
+
                         isEnabled = false
                         onBackPressedDispatcher.onBackPressed()
                     }
                 }
-            })
-        } catch (e: Exception) {
-            Log.e(TAG, "Error setting up back press handler", e)
-        }
+            }
+        )
     }
+
+    // =========================================================
+    // WEBVIEW CONFIGURATION
+    // =========================================================
 
     @SuppressLint("SetJavaScriptEnabled")
     private fun setupWebView() {
-        try {
-            val settings = webView?.settings ?: return
 
-            settings.apply {
+        val wv = webView ?: return
+
+        try {
+
+            wv.settings.apply {
+
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 databaseEnabled = true
-                allowFileAccess = true
+
+                allowFileAccess = false
                 allowContentAccess = true
+
                 builtInZoomControls = true
                 displayZoomControls = false
+
                 useWideViewPort = true
                 loadWithOverviewMode = true
-                mediaPlaybackRequiresUserGesture = false
-                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+
+                mediaPlaybackRequiresUserGesture = true
+
+                mixedContentMode =
+                    WebSettings.MIXED_CONTENT_NEVER_ALLOW
+
                 cacheMode = WebSettings.LOAD_DEFAULT
+
                 setGeolocationEnabled(true)
-                setSupportMultipleWindows(true)
-                javaScriptCanOpenWindowsAutomatically = true
-                userAgentString = "$userAgentString WebViewApp/1.0"
+
+                // Popup windows are disabled for security
+                setSupportMultipleWindows(false)
+                javaScriptCanOpenWindowsAutomatically = false
+
+                userAgentString =
+                    "$userAgentString WebViewApp/1.0"
+
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    safeBrowsingEnabled = true
+                }
             }
 
             CookieManager.getInstance().apply {
+
                 setAcceptCookie(true)
-                setAcceptThirdPartyCookies(webView, true)
+
+                setAcceptThirdPartyCookies(
+                    wv,
+                    true
+                )
             }
+
+            WebView.setWebContentsDebuggingEnabled(
+                BuildConfig.DEBUG
+            )
+
         } catch (e: Exception) {
-            Log.e(TAG, "Error configuring WebView settings", e)
+            Log.e(TAG, "WebView settings error", e)
         }
 
-        // ===== FILE DOWNLOAD SUPPORT =====
-        webView?.setDownloadListener { url, userAgent, contentDisposition, mimeType, contentLength ->
-            try {
-                val request = DownloadManager.Request(Uri.parse(url))
+        setupDownloadListener(wv)
+        setupWebViewClient(wv)
+        setupWebChromeClient(wv)
+    }
 
-                var fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-                if (fileName.isNullOrBlank()) {
-                    fileName = "download_${System.currentTimeMillis()}"
+    // =========================================================
+    // DOWNLOAD MANAGER
+    // =========================================================
+
+    private fun setupDownloadListener(wv: WebView) {
+
+        wv.setDownloadListener {
+                url,
+                userAgent,
+                contentDisposition,
+                mimeType,
+                _ ->
+
+            try {
+
+                val uri = Uri.parse(url)
+
+                if (uri.scheme != "https" && uri.scheme != "http") {
+                    Toast.makeText(
+                        this,
+                        "Unsupported download URL",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                    return@setDownloadListener
                 }
 
+                val fileName = URLUtil.guessFileName(
+                    url,
+                    contentDisposition,
+                    mimeType
+                ).replace(Regex("[/\\\\]"), "_")
+
+                val request = DownloadManager.Request(uri)
+
                 request.apply {
+
                     setMimeType(mimeType)
-                    addRequestHeader("User-Agent", userAgent)
+
+                    addRequestHeader(
+                        "User-Agent",
+                        userAgent
+                    )
+
+                    CookieManager.getInstance()
+                        .getCookie(url)
+                        ?.let {
+                            addRequestHeader("Cookie", it)
+                        }
+
                     setDescription("Downloading file...")
                     setTitle(fileName)
-                    setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
-                    allowScanningByMediaScanner()
+
+                    setNotificationVisibility(
+                        DownloadManager.Request
+                            .VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                    )
+
+                    setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_DOWNLOADS,
+                        fileName
+                    )
+
                     setAllowedOverMetered(true)
                     setAllowedOverRoaming(true)
                 }
 
-                val downloadManager = getSystemService(DOWNLOAD_SERVICE) as DownloadManager
-                downloadManager.enqueue(request)
+                val manager =
+                    getSystemService(DOWNLOAD_SERVICE) as DownloadManager
 
-                Toast.makeText(this, "Downloading: $fileName", Toast.LENGTH_SHORT).show()
+                manager.enqueue(request)
+
+                Toast.makeText(
+                    this,
+                    "Downloading: $fileName",
+                    Toast.LENGTH_SHORT
+                ).show()
+
             } catch (e: Exception) {
-                Log.e(TAG, "Error starting download", e)
-                Toast.makeText(this, "Download failed", Toast.LENGTH_SHORT).show()
+
+                Log.e(TAG, "Download error", e)
+
+                Toast.makeText(
+                    this,
+                    "Download failed",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
+    }
 
-        webView?.webViewClient = object : WebViewClient() {
-            override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+    // =========================================================
+    // WEBVIEW CLIENT
+    // =========================================================
+
+    private fun setupWebViewClient(wv: WebView) {
+
+        wv.webViewClient = object : WebViewClient() {
+
+            override fun onPageStarted(
+                view: WebView?,
+                url: String?,
+                favicon: Bitmap?
+            ) {
                 super.onPageStarted(view, url, favicon)
             }
 
-            override fun onPageFinished(view: WebView?, url: String?) {
-                try {
-                    super.onPageFinished(view, url)
+            override fun onPageFinished(
+                view: WebView?,
+                url: String?
+            ) {
+                super.onPageFinished(view, url)
 
-                    if (isFirstPageLoad) {
-                        isFirstPageLoad = false
-                        fadeOutLoadingOverlay()
-                    }
-
-                    // Dynamic status bar
-                    view?.evaluateJavascript(
-                        """
-                        (function() {
-                            var bg = window.getComputedStyle(document.body).backgroundColor;
-                            if (!bg || bg === 'rgba(0, 0, 0, 0)' || bg === 'transparent') {
-                                bg = window.getComputedStyle(document.documentElement).backgroundColor;
-                            }
-                            return bg;
-                        })();
-                        """.trimIndent()
-                    ) { result ->
-                        try {
-                            if (result != null && result != "null") {
-                                val colorString = result.replace("\"", "").trim()
-                                val color = parseCssColor(colorString)
-                                applyStatusBarColor(color)
-                            } else {
-                                applyStatusBarColor(null)
-                            }
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Error applying status bar color", e)
-                            applyStatusBarColor(null)
-                        }
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in onPageFinished", e)
+                if (isFirstPageLoad) {
+                    isFirstPageLoad = false
+                    fadeOutLoadingOverlay()
                 }
             }
 
-            override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                try {
-                    val url = request?.url?.toString() ?: return false
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
 
-                    if (url.startsWith("tel:") || url.startsWith("mailto:") ||
-                        url.startsWith("sms:") || url.startsWith("whatsapp:")
-                    ) {
-                        try {
-                            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                        } catch (e: Exception) {
-                            Toast.makeText(this@MainActivity, "Cannot open this link", Toast.LENGTH_SHORT).show()
-                        }
-                        return true
-                    }
+                val url = request?.url ?: return false
 
-                    if (url.startsWith("intent:")) {
-                        try {
-                            val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
-                            startActivity(intent)
-                        } catch (e: Exception) {
-                            Log.e(TAG, "Cannot parse intent URL: $url", e)
-                        }
-                        return true
-                    }
-
-                    return false
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in shouldOverrideUrlLoading", e)
-                    return false
-                }
+                return handleExternalUrl(url)
             }
 
             override fun onReceivedError(
@@ -386,311 +620,572 @@ class MainActivity : AppCompatActivity() {
                 request: WebResourceRequest?,
                 error: WebResourceError?
             ) {
-                try {
-                    super.onReceivedError(view, request, error)
-                    if (request?.isForMainFrame == true && isFirstPageLoad) {
-                        isFirstPageLoad = false
-                        fadeOutLoadingOverlay()
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error in onReceivedError", e)
+                super.onReceivedError(view, request, error)
+
+                if (request?.isForMainFrame == true && isFirstPageLoad) {
+                    isFirstPageLoad = false
+                    fadeOutLoadingOverlay()
+                }
+            }
+
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(
+                    view,
+                    request,
+                    errorResponse
+                )
+
+                if (
+                    request?.isForMainFrame == true &&
+                    isFirstPageLoad
+                ) {
+                    isFirstPageLoad = false
+                    fadeOutLoadingOverlay()
                 }
             }
         }
+    }
 
-        webView?.webChromeClient = object : WebChromeClient() {
+    // =========================================================
+    // EXTERNAL URL HANDLING
+    // =========================================================
 
-            // ===== IMPROVED FILE UPLOAD + CAMERA =====
+    private fun handleExternalUrl(uri: Uri): Boolean {
+
+        val scheme = uri.scheme?.lowercase() ?: return false
+
+        when (scheme) {
+
+            "http", "https" -> return false
+
+            "tel", "mailto", "sms", "smsto", "whatsapp" -> {
+
+                try {
+
+                    startActivity(
+                        Intent(
+                            Intent.ACTION_VIEW,
+                            uri
+                        )
+                    )
+
+                } catch (e: Exception) {
+
+                    Toast.makeText(
+                        this,
+                        "No application can open this link",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+
+                return true
+            }
+
+            "intent" -> {
+
+                try {
+
+                    val intent = Intent.parseUri(
+                        uri.toString(),
+                        Intent.URI_INTENT_SCHEME
+                    )
+
+                    val fallback =
+                        intent.getStringExtra("browser_fallback_url")
+
+                    if (intent.resolveActivity(packageManager) != null) {
+                        startActivity(intent)
+                    } else if (!fallback.isNullOrBlank()) {
+                        webView?.loadUrl(fallback)
+                    }
+
+                } catch (e: Exception) {
+                    Log.e(TAG, "Intent URL error", e)
+                }
+
+                return true
+            }
+
+            else -> return true
+        }
+    }
+
+    // =========================================================
+    // WEB CHROME CLIENT
+    // =========================================================
+
+    private fun setupWebChromeClient(wv: WebView) {
+
+        wv.webChromeClient = object : WebChromeClient() {
+
+            // -------------------------------------------------
+            // FILE UPLOAD + CAMERA
+            // -------------------------------------------------
+
             override fun onShowFileChooser(
                 webView: WebView?,
                 filePathCallback: ValueCallback<Array<Uri>>?,
                 fileChooserParams: FileChooserParams?
             ): Boolean {
+
                 try {
+
                     fileUploadCallback?.onReceiveValue(null)
+
                     fileUploadCallback = filePathCallback
 
-                    val acceptTypes = fileChooserParams?.acceptTypes
-                    val allowMultiple = fileChooserParams?.mode == FileChooserParams.MODE_OPEN_MULTIPLE
+                    val acceptTypes =
+                        fileChooserParams?.acceptTypes
+                            ?.filter { it.isNotBlank() }
+                            ?: emptyList()
 
-                    // Try to create a better chooser that includes Camera when possible
-                    val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = if (!acceptTypes.isNullOrEmpty() && acceptTypes[0].isNotBlank()) {
-                            acceptTypes[0]
-                        } else {
-                            "*/*"
-                        }
-                        putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                    val allowMultiple =
+                        fileChooserParams?.mode ==
+                            FileChooserParams.MODE_OPEN_MULTIPLE
+
+                    val mimeType = when {
+
+                        acceptTypes.isEmpty() -> "*/*"
+
+                        acceptTypes.size == 1 -> acceptTypes.first()
+
+                        else -> "*/*"
                     }
 
-                    // Also offer camera if the accept type looks like image/video
-                    val isImageOrVideo = acceptTypes?.any {
-                        it.contains("image") || it.contains("video") || it == "*/*"
-                    } == true || acceptTypes.isNullOrEmpty()
+                    val contentIntent = Intent(
+                        Intent.ACTION_GET_CONTENT
+                    ).apply {
 
-                    if (isImageOrVideo) {
-                        val cameraIntent = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
-                        val chooser = Intent.createChooser(intent, "Select file")
-                        chooser.putExtra(Intent.EXTRA_INITIAL_INTENTS, arrayOf(cameraIntent))
+                        addCategory(Intent.CATEGORY_OPENABLE)
+
+                        type = mimeType
+
+                        if (acceptTypes.size > 1) {
+                            putExtra(
+                                Intent.EXTRA_MIME_TYPES,
+                                acceptTypes.toTypedArray()
+                            )
+                        }
+
+                        putExtra(
+                            Intent.EXTRA_ALLOW_MULTIPLE,
+                            allowMultiple
+                        )
+                    }
+
+                    val isImageUpload =
+                        acceptTypes.isEmpty() ||
+                        acceptTypes.any {
+                            it.startsWith("image/") ||
+                            it == "*/*"
+                        }
+
+                    if (isImageUpload) {
+
+                        val cameraFile = File.createTempFile(
+                            "camera_${System.currentTimeMillis()}_",
+                            ".jpg",
+                            cacheDir
+                        )
+
+                        cameraImageUri = FileProvider.getUriForFile(
+                            this@MainActivity,
+                            "$packageName.fileprovider",
+                            cameraFile
+                        )
+
+                        val cameraIntent = Intent(
+                            MediaStore.ACTION_IMAGE_CAPTURE
+                        ).apply {
+
+                            putExtra(
+                                MediaStore.EXTRA_OUTPUT,
+                                cameraImageUri
+                            )
+
+                            addFlags(
+                                Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            )
+                        }
+
+                        val chooser = Intent.createChooser(
+                            contentIntent,
+                            "Select or capture image"
+                        )
+
+                        chooser.putExtra(
+                            Intent.EXTRA_INITIAL_INTENTS,
+                            arrayOf(cameraIntent)
+                        )
+
                         fileChooserLauncher.launch(chooser)
+
                     } else {
-                        fileChooserLauncher.launch(Intent.createChooser(intent, "Select file"))
+
+                        fileChooserLauncher.launch(
+                            Intent.createChooser(
+                                contentIntent,
+                                "Select file"
+                            )
+                        )
                     }
 
                     return true
+
                 } catch (e: Exception) {
-                    Log.e(TAG, "Error showing file chooser", e)
-                    filePathCallback?.onReceiveValue(null)
+
+                    Log.e(TAG, "File chooser error", e)
+
+                    fileUploadCallback?.onReceiveValue(null)
+                    fileUploadCallback = null
+
+                    cameraImageUri = null
+
                     return false
                 }
             }
+
+            // -------------------------------------------------
+            // GEOLOCATION
+            // -------------------------------------------------
 
             override fun onGeolocationPermissionsShowPrompt(
                 origin: String?,
                 callback: GeolocationPermissions.Callback?
             ) {
-                try {
-                    geolocationOrigin = origin
-                    geolocationCallback = callback
 
-                    val permissions = arrayOf(
-                        Manifest.permission.ACCESS_FINE_LOCATION,
-                        Manifest.permission.ACCESS_COARSE_LOCATION
-                    )
-
-                    if (hasPermissions(permissions)) {
-                        callback?.invoke(origin, true, false)
-                    } else {
-                        geolocationPermissionLauncher.launch(permissions)
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error handling geolocation permission", e)
+                if (
+                    origin == null ||
+                    !isTrustedOrigin(origin)
+                ) {
                     callback?.invoke(origin, false, false)
+                    return
+                }
+
+                geolocationOrigin = origin
+                geolocationCallback = callback
+
+                val permissions = arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+
+                if (hasPermissions(permissions)) {
+
+                    callback?.invoke(origin, true, false)
+
+                    geolocationCallback = null
+                    geolocationOrigin = null
+
+                } else {
+
+                    geolocationPermissionLauncher.launch(
+                        permissions
+                    )
                 }
             }
 
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                try {
-                    if (resultMsg == null) return false
-                    val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+            // -------------------------------------------------
+            // CAMERA AND MICROPHONE
+            // -------------------------------------------------
 
-                    val newWebView = WebView(this@MainActivity)
-                    transport.webView = newWebView
-                    resultMsg.sendToTarget()
+            override fun onPermissionRequest(
+                request: PermissionRequest?
+            ) {
 
-                    newWebView.webViewClient = object : WebViewClient() {
-                        override fun shouldOverrideUrlLoading(
-                            view: WebView?,
-                            request: WebResourceRequest?
-                        ): Boolean {
-                            webView?.loadUrl(request?.url?.toString() ?: "")
-                            return true
+                if (request == null) return
+
+                runOnUiThread {
+
+                    try {
+
+                        val origin =
+                            request.origin.toString()
+
+                        if (!isTrustedOrigin(origin)) {
+                            request.deny()
+                            return@runOnUiThread
                         }
-                    }
-                    return true
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error creating window", e)
-                    return false
-                }
-            }
 
-            private var customView: View? = null
-            private var customViewCallback: CustomViewCallback? = null
-
-            override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
-                try {
-                    customView = view
-                    customViewCallback = callback
-                    container?.addView(view)
-                    webView?.visibility = View.GONE
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error showing custom view", e)
-                }
-            }
-
-            override fun onHideCustomView() {
-                try {
-                    container?.removeView(customView)
-                    webView?.visibility = View.VISIBLE
-                    customViewCallback?.onCustomViewHidden()
-                    customView = null
-                    customViewCallback = null
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error hiding custom view", e)
-                }
-            }
-
-            override fun onPermissionRequest(request: PermissionRequest?) {
-                try {
-                    request?.let { permRequest ->
                         val permissions = mutableListOf<String>()
 
-                        permRequest.resources.forEach { resource ->
+                        for (resource in request.resources) {
+
                             when (resource) {
+
                                 PermissionRequest.RESOURCE_VIDEO_CAPTURE -> {
-                                    permissions.add(Manifest.permission.CAMERA)
+                                    permissions.add(
+                                        Manifest.permission.CAMERA
+                                    )
                                 }
+
                                 PermissionRequest.RESOURCE_AUDIO_CAPTURE -> {
-                                    permissions.add(Manifest.permission.RECORD_AUDIO)
+                                    permissions.add(
+                                        Manifest.permission.RECORD_AUDIO
+                                    )
+                                }
+
+                                else -> {
+                                    request.deny()
+                                    return@runOnUiThread
                                 }
                             }
                         }
 
                         if (permissions.isEmpty()) {
-                            permRequest.grant(permRequest.resources)
-                        } else if (hasPermissions(permissions.toTypedArray())) {
-                            permRequest.grant(permRequest.resources)
-                        } else {
-                            pendingPermissionRequest = permRequest
-                            mediaPermissionLauncher.launch(permissions.toTypedArray())
+                            request.grant(request.resources)
+                            return@runOnUiThread
                         }
+
+                        if (hasPermissions(permissions.toTypedArray())) {
+
+                            request.grant(request.resources)
+
+                        } else {
+
+                            pendingPermissionRequest = request
+
+                            mediaPermissionLauncher.launch(
+                                permissions.distinct().toTypedArray()
+                            )
+                        }
+
+                    } catch (e: Exception) {
+
+                        Log.e(TAG, "Web permission error", e)
+                        request.deny()
                     }
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error handling permission request", e)
-                    request?.deny()
                 }
+            }
+
+            // -------------------------------------------------
+            // FULLSCREEN VIDEO
+            // -------------------------------------------------
+
+            override fun onShowCustomView(
+                view: View?,
+                callback: CustomViewCallback?
+            ) {
+
+                if (view == null) return
+
+                customView = view
+                customViewCallback = callback
+
+                webView?.visibility = View.GONE
+
+                container?.addView(
+                    view,
+                    FrameLayout.LayoutParams(
+                        FrameLayout.LayoutParams.MATCH_PARENT,
+                        FrameLayout.LayoutParams.MATCH_PARENT
+                    )
+                )
+
+                view.bringToFront()
+
+                WindowInsetsControllerCompat(
+                    window,
+                    window.decorView
+                ).hide(
+                    WindowInsetsCompat.Type.systemBars()
+                )
+            }
+
+            override fun onHideCustomView() {
+                hideCustomView()
             }
         }
     }
+
+    // =========================================================
+    // FULLSCREEN CLEANUP
+    // =========================================================
+
+    private fun hideCustomView() {
+
+        try {
+
+            customView?.let {
+                container?.removeView(it)
+            }
+
+            customView = null
+
+            webView?.visibility = View.VISIBLE
+
+            customViewCallback?.onCustomViewHidden()
+            customViewCallback = null
+
+            WindowInsetsControllerCompat(
+                window,
+                window.decorView
+            ).show(
+                WindowInsetsCompat.Type.systemBars()
+            )
+
+        } catch (e: Exception) {
+            Log.e(TAG, "Fullscreen cleanup error", e)
+        }
+    }
+
+    // =========================================================
+    // TRUSTED WEBSITE CHECK
+    // =========================================================
+
+    private fun isTrustedOrigin(origin: String): Boolean {
+
+        return try {
+
+            val requestedHost =
+                Uri.parse(origin).host ?: return false
+
+            val trustedHost =
+                Uri.parse(BuildConfig.WEBSITE_URL).host
+                    ?: return false
+
+            requestedHost.equals(
+                trustedHost,
+                ignoreCase = true
+            )
+
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // =========================================================
+    // PERMISSION CHECK
+    // =========================================================
+
+    private fun hasPermissions(
+        permissions: Array<String>
+    ): Boolean {
+
+        return permissions.all {
+
+            ContextCompat.checkSelfPermission(
+                this,
+                it
+            ) == PackageManager.PERMISSION_GRANTED
+        }
+    }
+
+    // =========================================================
+    // SPLASH SCREEN ANIMATION
+    // =========================================================
 
     private fun fadeOutLoadingOverlay() {
+
         val overlay = loadingOverlay ?: return
 
-        val fadeOut = AlphaAnimation(1f, 0f).apply {
+        if (overlay.visibility != View.VISIBLE) return
+
+        val animation = AlphaAnimation(1f, 0f).apply {
+
             duration = 400
-            fillAfter = true
-            setAnimationListener(object : Animation.AnimationListener {
-                override fun onAnimationStart(animation: Animation?) {}
-                override fun onAnimationRepeat(animation: Animation?) {}
-                override fun onAnimationEnd(animation: Animation?) {
-                    overlay.visibility = View.GONE
+            fillAfter = false
+
+            setAnimationListener(
+                object : android.view.animation.Animation.AnimationListener {
+
+                    override fun onAnimationStart(
+                        animation: android.view.animation.Animation?
+                    ) {}
+
+                    override fun onAnimationRepeat(
+                        animation: android.view.animation.Animation?
+                    ) {}
+
+                    override fun onAnimationEnd(
+                        animation: android.view.animation.Animation?
+                    ) {
+
+                        overlay.visibility = View.GONE
+                        overlay.clearAnimation()
+                    }
                 }
-            })
+            )
         }
-        overlay.startAnimation(fadeOut)
+
+        overlay.startAnimation(animation)
     }
 
-    private fun parseCssColor(cssColor: String): Int? {
-        return try {
-            when {
-                cssColor.startsWith("rgb") -> {
-                    val values = cssColor
-                        .replace("rgba(", "")
-                        .replace("rgb(", "")
-                        .replace(")", "")
-                        .split(",")
-                        .map { it.trim().toFloatOrNull() ?: 0f }
-
-                    if (values.size >= 3) {
-                        val r = values[0].toInt().coerceIn(0, 255)
-                        val g = values[1].toInt().coerceIn(0, 255)
-                        val b = values[2].toInt().coerceIn(0, 255)
-                        val a = if (values.size >= 4) values[3] else 1f
-
-                        if (a < 0.35f) return null
-                        Color.rgb(r, g, b)
-                    } else null
-                }
-                cssColor.startsWith("#") -> Color.parseColor(cssColor)
-                else -> null
-            }
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private fun applyStatusBarColor(color: Int?) {
-        try {
-            if (color == null) {
-                window.statusBarColor = Color.TRANSPARENT
-                window.navigationBarColor = Color.TRANSPARENT
-                return
-            }
-
-            val luminance = (0.299 * Color.red(color) +
-                    0.587 * Color.green(color) +
-                    0.114 * Color.blue(color)) / 255
-
-            val isLightBackground = luminance > 0.55
-
-            WindowInsetsControllerCompat(window, window.decorView).apply {
-                isAppearanceLightStatusBars = isLightBackground
-                isAppearanceLightNavigationBars = isLightBackground
-            }
-
-            if (luminance > 0.18) {
-                window.statusBarColor = color
-                window.navigationBarColor = color
-            } else {
-                window.statusBarColor = Color.TRANSPARENT
-                window.navigationBarColor = Color.TRANSPARENT
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Error applying status bar color", e)
-            window.statusBarColor = Color.TRANSPARENT
-            window.navigationBarColor = Color.TRANSPARENT
-        }
-    }
-
-    private fun hasPermissions(permissions: Array<String>): Boolean {
-        return permissions.all {
-            ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
-        }
-    }
+    // =========================================================
+    // LIFECYCLE
+    // =========================================================
 
     override fun onResume() {
         super.onResume()
+
         if (!isDestroyed) {
-            try {
-                webView?.onResume()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onResume", e)
-            }
+            webView?.onResume()
         }
     }
 
     override fun onPause() {
+
+        webView?.onPause()
+
         super.onPause()
-        if (!isDestroyed) {
-            try {
-                webView?.onPause()
-            } catch (e: Exception) {
-                Log.e(TAG, "Error in onPause", e)
-            }
-        }
     }
 
     override fun onDestroy() {
+
         isDestroyed = true
+
         try {
+
             fileUploadCallback?.onReceiveValue(null)
             fileUploadCallback = null
-            geolocationCallback?.invoke(geolocationOrigin, false, false)
+
+            geolocationCallback?.invoke(
+                geolocationOrigin,
+                false,
+                false
+            )
+
             geolocationCallback = null
+            geolocationOrigin = null
+
             pendingPermissionRequest?.deny()
             pendingPermissionRequest = null
 
             CookieManager.getInstance().flush()
 
+            hideCustomView()
+
             webView?.let { wv ->
+
+                wv.stopLoading()
                 wv.loadUrl("about:blank")
+
+                wv.webChromeClient = null
+                wv.webViewClient = WebViewClient()
+
                 wv.onPause()
                 wv.removeAllViews()
+
                 container?.removeView(wv)
+
                 wv.destroy()
             }
+
             webView = null
+            statusBarOverlay = null
             loadingOverlay = null
             container = null
+
         } catch (e: Exception) {
-            Log.e(TAG, "Error in onDestroy", e)
+
+            Log.e(TAG, "Destroy error", e)
         }
+
         super.onDestroy()
     }
 }
